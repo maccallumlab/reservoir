@@ -82,7 +82,7 @@ class HighMarkReservoir(object):
         ratio = weight / self._average_weight
         lower = math.floor(ratio)
         p = ratio - lower
-        if random.random() < p:
+        if random.random() > p:
             return int(lower)
         else:
             return int(lower + 1)
