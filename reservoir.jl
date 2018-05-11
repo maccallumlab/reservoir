@@ -127,7 +127,7 @@ Resample to obtain exactly `reservoir.targetsize` entries.
 """
 function resample!(res::Reservoir)
     weights = [e.weight for e in res.contents]
-    
+
     # check if we need to resample
     needsresample = false
     if size(res.contents, 1) < res.lowwater
@@ -139,7 +139,7 @@ function resample!(res::Reservoir)
     if maximum(weights) / minimum(weights) > res.maxratio
         needsresample = true
     end
-    
+
     if needsresample
         total_weight = sum(weights)
         new_weight = total_weight / res.targetsize
@@ -160,7 +160,7 @@ function systematicresample(weights::Array{Float64, 1}, n::Int)::Array{Int, 1}
     u = rand() / n
     j = 1
     sumq = probs[j]
-    
+
     for i=1:n
         while sumq < u
             j = j + 1
@@ -178,13 +178,15 @@ struct Waterfall
     reservoirs::Array{Reservoir, 1}
     history::Array{Int, 2}
     weighthistory::Array{Float64, 2}
+    reservoirhistory::Array{Float64, 3}
 
-    function Waterfall(walkers, reservoirs, history, weighthistory)
+    function Waterfall(walkers, reservoirs, history, weighthistory, reservoirhistory)
         n = size(walkers, 1)
         @assert size(reservoirs, 1) == n
         @assert size(history, 1) == n
         @assert size(weighthistory, 1) == n
-        new(walkers, reservoirs, history, weighthistory)
+        @assert size(reservoirhistory, 1) == n
+        new(walkers, reservoirs, history, weighthistory, reservoirhistory)
     end
 end
 
@@ -193,20 +195,21 @@ Base.show(io::IO, wf::Waterfall) = print(io, "Waterfall with ", size(wf.walkers,
 function runwaterfall(walkers::Array{Walker, 1}, steps::Int, walksteps::Int,
     targetsize::Int, lowwater::Int, highwater::Int, maxratio::Float64, usetopres::Bool)
     N = size(walkers, 1)
-    
+
     # The top reservoir is different, because we want all structures
     # to have a weight of 1.0, so we need to add them all at the start
     reservoirs = [Reservoir(targetsize, lowwater, highwater, maxratio) for i in 1:N-1]
     topres = Reservoir(targetsize, lowwater, highwater, maxratio, [ReservoirEntry(1, 1.0) for i=1:targetsize])
     push!(reservoirs, topres)
-    
+
     # Create the history
     history = zeros(Int, N, steps)
     weighthistory = zeros(Float64, N, steps)
-    
+    reservoirhistory = zeros(Float64, N, steps, size(walkers[1].landscape, 1))
+
     # create the waterfall
-    wf = Waterfall(walkers, reservoirs, history, weighthistory)
-    
+    wf = Waterfall(walkers, reservoirs, history, weighthistory, reservoirhistory)
+
     # Setup initial state of history.
     # We pre-allocate the arrays to the right
     # size for speed.
@@ -218,13 +221,13 @@ function runwaterfall(walkers::Array{Walker, 1}, steps::Int, walksteps::Int,
             wf.weighthistory[i, 1] = 1e-99
         end
     end
-    
+
     # Setup the initial state of the reservoir.
     # The top reservoir has already been handled
     for i=1:N-1
         insert!(wf.reservoirs[i], ReservoirEntry(1, 1e-99))
     end
-    
+
     #
     # Do all of our steps
     #
@@ -239,7 +242,11 @@ function runwaterfall(walkers::Array{Walker, 1}, steps::Int, walksteps::Int,
             wf.weighthistory[N, step] = 1.0
             neww = computew(wf.walkers[N], wf.walkers[N-1], w.pos)
             insert!(wf.reservoirs[N-1], ReservoirEntry(step, neww))
+            # updatereservoirhistory(wf.reservoirs[N-1],
+            #                        view(wf.history, N, :),
+            #                        view(wf.reservoirhistory, N-1, step, :))
         else
+            @assert false
             entry = poprandom!(wf.reservoirs[N])
             oldpos = wf.history[N, entry.index]
             oldw = entry.weight
@@ -252,7 +259,7 @@ function runwaterfall(walkers::Array{Walker, 1}, steps::Int, walksteps::Int,
             insert!(wf.reservoirs[N-1], ReservoirEntry(step, neww))
             insert!(wf.reservoirs[N], ReservoirEntry(step, oldw))
         end
-        
+
         #
         # Update the middle walkers
         #
@@ -271,9 +278,12 @@ function runwaterfall(walkers::Array{Walker, 1}, steps::Int, walksteps::Int,
             neww = computew(wf.walkers[i], wf.walkers[i-1], w.pos)
             # Put the new structure in the next lowest reservoir
             insert!(wf.reservoirs[i-1], ReservoirEntry(step, neww*oldw))
-            wf.weighthistory[i, step] = neww * oldw
+            wf.weighthistory[i, step] = oldw
+            updatereservoirhistory(wf.reservoirs[i],
+                                   view(wf.history, i+1, :),
+                                   view(wf.reservoirhistory, i, step, :))
         end
-        
+
         #
         # Update the bottom walker
         #
@@ -287,6 +297,9 @@ function runwaterfall(walkers::Array{Walker, 1}, steps::Int, walksteps::Int,
         # Update the history
         wf.history[1, step] = w.pos
         wf.weighthistory[1, step] = oldw
+        updatereservoirhistory(wf.reservoirs[1],
+                                view(wf.history, 2, :),
+                                view(wf.reservoirhistory, 1, step, :))
     end
     wf
 end
@@ -296,4 +309,13 @@ function computew(w1::Walker, w2::Walker, x::Int)::Float64
     e1 = w1.landscape[x]
     e2 = w2.landscape[x]
     exp(e1 - e2)
+end
+
+function updatereservoirhistory(res, hist, out)
+    for item in res.contents
+        index = item.index
+        weight = item.weight
+        x = hist[index]
+        out[x] += weight
+    end
 end
